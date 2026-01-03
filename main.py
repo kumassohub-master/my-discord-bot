@@ -105,7 +105,7 @@ async def call(interaction: discord.Interaction):
     gid = str(interaction.guild_id)
     current_guild_users = [u for u, data in db["users"].items() if gid in data.get("guilds", [])]
     
-    if len(current_guild_users) < 1:
+    if len(current_guild_users) < 10:
         return await interaction.followup.send(f"❌ 認証ユーザーがいません。")
     
     success = 0
