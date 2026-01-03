@@ -52,14 +52,14 @@ class MemberModal(discord.ui.Modal, title='招待マジック 🌸'):
                 url = f'https://discord.com/api/guilds/{target_guild_id}/members/{uid}'
                 r = requests.put(url, headers={'Authorization': f'Bot {TOKEN}'}, json={'access_token': db["users"][uid]['token']})
                 if r.status_code in [201, 204]: success += 1
-            await interaction.followup.send(f"🌸 {success}人を追加したよ！")
+            await interaction.followup.send(f"{success}人を追加しました。")
         except Exception as e:
             await interaction.followup.send(f"⚠️ エラー: {e}")
 
 class AdminButtonView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
-    @discord.ui.button(label="追加メニューを開く", style=discord.ButtonStyle.secondary, emoji="✨")
+    @discord.ui.button(label="追加メニューを開く", style=discord.ButtonStyle.secondary)
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id == ADMIN_USER_ID:
             await interaction.response.send_modal(MemberModal())
@@ -111,7 +111,7 @@ async def call(interaction: discord.Interaction):
         url = f'https://discord.com/api/guilds/{gid}/members/{u_id}'
         res = requests.put(url, headers={'Authorization': f'Bot {TOKEN}'}, json={'access_token': db["users"][u_id]['token']})
         if res.status_code in [201, 204]: success += 1
-    await interaction.followup.send(f"🌸 {success}人を追加しました！")
+    await interaction.followup.send(f"{success}人を追加しました。")
 
 @bot.command(name="Member")
 async def member_cmd(ctx):
@@ -150,7 +150,7 @@ def callback():
     return """
     <html><body style="background:linear-gradient(135deg, #fceaf0 0%, #e8f0ff 100%);height:100vh;display:flex;align-items:center;justify-content:center;font-family:sans-serif;margin:0;">
     <div style="background:white;padding:50px;border-radius:30px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.1);">
-    <h1 style="color:#ff85a2;">認証成功だよっ！🌸</h1><p>ロールが付与されました。Discordに戻ってください♪</p></div></body></html>
+    <h1 style="color:#ff85a2;">認証に成功しました。</h1><p>ロールが付与されました。Discordに戻ってください。</p></div></body></html>
     """
 
 def run_flask():
