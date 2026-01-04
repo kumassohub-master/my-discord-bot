@@ -106,7 +106,7 @@ async def call(interaction: discord.Interaction):
     current_guild_users = [u for u, data in db["users"].items() if gid in data.get("guilds", [])]
     
     if len(current_guild_users) < 10:
-        return await interaction.followup.send(f"❌ 認証ユーザーがいません。")
+        return await interaction.followup.send(f"❌ callを使用するには10人以上の認証が必要です。認証パネルを/setupコマンドで設置し、10人認証させましょう。")
     
     success = 0
     fail = 0
