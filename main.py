@@ -145,6 +145,10 @@ async def member_cmd(ctx):
 
 # --- Flask Server ---
 app = Flask(__name__)
+# main.py の app = Flask(__name__) のすぐ下あたりに追加
+@app.route('/')
+def home():
+    return "Bot is running!"
 
 @app.route('/callback')
 def callback():
